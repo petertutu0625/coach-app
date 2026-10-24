@@ -1,0 +1,12 @@
+{
+  "name": "coach-ledger",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "教練帳本 — 私人教練記帳 PWA（零執行期依賴）",
+  "scripts": {
+    "test": "node --test tests/",
+    "serve": "python3 -m http.server 8080",
+    "screenshots": "node tools/screenshots.mjs"
+  }
+}
