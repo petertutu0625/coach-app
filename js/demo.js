@@ -22,9 +22,19 @@ export function buildDemo(today) {
     P({ id: id('p6'), studentId: id('s5'), name: '體驗 8 堂', price: 14400, paidSessions: 8, purchaseDate: d(9, 3), expiryDate: d(5, 28), notes: '到期未上完', createdAt: d(9, 3) }),
     P({ id: id('p7'), studentId: id('s5'), name: '一對一 10 堂', price: 19000, paidSessions: 10, purchaseDate: d(4, 1), refund: { amount: 9000, date: d(2, 15) }, notes: '搬家退費', createdAt: d(4, 1) }),
   ];
+  const venues = [
+    { id: id('v1'), name: '大安健身工作室（範例）', fee: 400, mode: 'perClass', archived: false, createdAt: d(9, 1), demo: true },
+    { id: id('v2'), name: '信義運動中心（範例）', fee: 150, mode: 'perPerson', archived: false, createdAt: d(9, 1), demo: true },
+    { id: id('v3'), name: '內湖私人場館（範例）', fee: 300, mode: 'perClass', archived: false, createdAt: d(9, 1), demo: true },
+  ];
+  const venueOf = { s1: venues[0], s2: venues[2], s3: venues[1] }; // 雅婷在河濱戶外上課：無場地費
   const sessions = [];
   let n = 0;
-  const S = (date, time, attendees, note = {}) => sessions.push({ id: id(`c${++n}`), datetime: `${date}T${time}`, attendees: attendees.map(([s, p, nt]) => ({ studentId: id(s), packageId: id(p), note: nt || '' })), sharedNote: { content: '', sets: '', condition: '', ...note }, createdAt: `${date}T${time}`, demo: true });
+  const S = (date, time, attendees, note = {}) => {
+    const v = venueOf[attendees[0][0]] || null;
+    const fee = !v ? 0 : v.mode === 'perPerson' ? v.fee * attendees.length : v.fee;
+    sessions.push({ id: id(`c${++n}`), datetime: `${date}T${time}`, attendees: attendees.map(([s, p, nt]) => ({ studentId: id(s), packageId: id(p), note: nt || '' })), sharedNote: { content: '', sets: '', condition: '', ...note }, venueId: v ? v.id : null, venueFee: fee, createdAt: `${date}T${time}`, demo: true });
+  };
   const moves = ['深蹲、臥推', '硬舉、划船', '核心、髖關節活動度', '上肢推拉', '下肢單側訓練', '體能循環'];
   // 小美：上完第一個方案 22 堂 → 續約
   for (let i = 0; i < 22; i++) S(addDays(d(7, 6), i * 9), '10:00', [['s1', 'p1']], { content: moves[i % 6], sets: '3×10', condition: i === 5 ? '膝蓋微痠' : '良好' });
@@ -37,5 +47,5 @@ export function buildDemo(today) {
   for (let i = 0; i < 5; i++) S(addDays(d(9, 5), i * 12), '07:00', [['s5', 'p6']], { content: '跑者肌力', sets: '', condition: '' });
   for (let i = 0; i < 3; i++) S(addDays(d(4, 3), i * 7), '07:00', [['s5', 'p7']], { content: '跑者肌力', sets: '', condition: i === 2 ? '下背緊' : '' });
   for (const s of students) s.demo = true;
-  return { students, packages, sessions };
+  return { students, packages, sessions, venues };
 }

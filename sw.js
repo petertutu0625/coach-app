@@ -1,5 +1,5 @@
 // 教練帳本 Service Worker：預先快取全部檔案，完全離線可用
-const CACHE = 'coach-ledger-v1.0.0';
+const CACHE = 'coach-ledger-v1.1.0';
 const ASSETS = [
   './', './index.html', './manifest.json', './css/app.css',
   './js/app.js', './js/engine.js', './js/format.js', './js/db.js', './js/demo.js',

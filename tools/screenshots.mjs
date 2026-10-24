@@ -63,8 +63,14 @@ await page.type('textarea[name="content"]', '一對二：壺鈴擺盪、推雪�
 await page.type('textarea[name="sets"]', '壺鈴 16kg 5×15');
 await page.type('input[name="condition"]', '良好');
 await page.type('[data-pnote="0"]', '核心降階');
+await page.select('select[name="venue"]', 'demo-v2'); await wait(200);
+const feeVal = await page.$eval('input[name="venueFee"]', (e) => e.value);
+assert(feeVal === '300', `每人計費場地：150 × 2 人 = 300（${feeVal}）`);
+await page.evaluate(() => window.scrollTo(0, 0));
 await wait(200);
 await shot('04-checkin');
+await page.$eval('#venueBox', (e) => e.scrollIntoView({ block: 'center' })); await wait(200);
+await shot('04b-checkin-venue');
 await shot('04-checkin-full', true);
 const beforeClasses = await page.evaluate(() => document.querySelectorAll('[data-pkg]').length);
 assert(beforeClasses === 2, '一對二：兩位學生各自有扣抵方案選單');
@@ -97,6 +103,10 @@ await shot('08-reports-full', true);
 await goto('#/settings');
 await shot('09-settings');
 await shot('09-settings-full', true);
+await page.$eval('#venueList', (e) => e.scrollIntoView({ block: 'start' })); await page.evaluate(() => window.scrollBy(0, -70)); await wait(200);
+await shot('13-venue-settings');
+await goto('#/venue-edit/demo-v2');
+await shot('14-venue-edit');
 
 // 深色模式
 await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
@@ -119,7 +129,7 @@ await shot('12-offline-home');
 await page.setOfflineMode(false);
 
 // 溢出檢查：任何頁面不得出現水平捲動
-for (const h of ['#/', '#/students', '#/student/demo-s1', '#/checkin', '#/reports', '#/settings']) {
+for (const h of ['#/', '#/students', '#/student/demo-s1', '#/checkin', '#/reports', '#/settings', '#/venue-new', '#/venue-edit/demo-v1']) {
   await goto(h);
   const ov = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   assert(ov <= 0, `${h} 無水平溢出（${ov}px）`);

@@ -5,6 +5,7 @@
 
 export const PAYMENT_TYPES = { full: '一次付清', installment: '無卡分期' };
 export const PACKAGE_TYPES = { '1on1': '一對一', '1on2': '一對二', group: '團體' };
+export const FEE_MODES = { perClass: '每堂固定', perPerson: '每人計費' };
 export const STATUS_LABELS = { active: '使用中', completed: '已上完', expired: '已過期', refunded: '已退費' };
 export const WARNING_LABELS = {
   afterRefund: '退費後仍有上課紀錄（未認列）',
@@ -188,13 +189,23 @@ export function monthSummary(data, ym, asOf, ledgers = computeAll(data, asOf)) {
       }
     }
   }
-  let classes = 0, attendances = 0;
+  let classes = 0, attendances = 0, venueFees = 0;
+  const feesByVenue = {}; // venueId（無場地 = ''）→ { fee, classes }
   for (const s of data.sessions || []) {
-    if (monthOf(s.datetime) === ym) { classes += 1; attendances += (s.attendees || []).length; }
+    if (monthOf(s.datetime) === ym) {
+      classes += 1; attendances += (s.attendees || []).length;
+      const f = sessionFee(s);
+      venueFees += f;
+      if (f > 0 || s.venueId) {
+        const k = s.venueId || '';
+        const b = feesByVenue[k] || (feesByVenue[k] = { fee: 0, classes: 0 });
+        b.fee += f; b.classes += 1;
+      }
+    }
   }
   const end = lastDayOfMonth(ym);
   const endingDeferred = sumUntil(allCash, end) - sumUntil(allIncome, end);
-  return { month: ym, cashIn, cashPurchases, cashRefunds, income, incomeSessions, incomeExpiry, incomeRefund, classes, attendances, endingDeferred };
+  return { month: ym, cashIn, cashPurchases, cashRefunds, income, incomeSessions, incomeExpiry, incomeRefund, venueFees, netIncome: income - venueFees, feesByVenue, classes, attendances, endingDeferred };
 }
 
 /** 最近 count 個月（含 endYm），由舊到新 */
@@ -207,10 +218,10 @@ export function monthlyReport(data, endYm, count, asOf) {
 
 export function yearTotals(data, year, asOf) {
   const ledgers = computeAll(data, asOf);
-  const t = { year, cashIn: 0, income: 0, classes: 0, attendances: 0, endingDeferred: 0 };
+  const t = { year, cashIn: 0, income: 0, venueFees: 0, netIncome: 0, classes: 0, attendances: 0, endingDeferred: 0 };
   for (let m = 1; m <= 12; m++) {
     const r = monthSummary(data, `${year}-${String(m).padStart(2, '0')}`, asOf, ledgers);
-    t.cashIn += r.cashIn; t.income += r.income; t.classes += r.classes; t.attendances += r.attendances;
+    t.cashIn += r.cashIn; t.income += r.income; t.venueFees += r.venueFees; t.netIncome += r.netIncome; t.classes += r.classes; t.attendances += r.attendances;
     if (m === 12) t.endingDeferred = r.endingDeferred;
   }
   return t;
@@ -332,4 +343,45 @@ export function removeStudent(data, studentId) {
       .map((s) => ({ ...s, attendees: s.attendees.filter((a) => a.studentId !== studentId) }))
       .filter((s) => s.attendees.length > 0),
   };
+}
+
+// ---------- 場地費 ----------
+/** 一筆上課紀錄的場地費（整堂合計）；舊紀錄沒有此欄位 → 0 */
+export function sessionFee(s) {
+  const v = Math.round(Number(s && s.venueFee));
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/** 依場地計費方式算出本堂場地費：每堂固定 = 預設費用；每人計費 = 預設費用 × 人數 */
+export function venueFeeFor(venue, attendeeCount) {
+  if (!venue) return 0;
+  const fee = Math.max(0, Math.round(Number(venue.fee) || 0));
+  return venue.mode === 'perPerson' ? fee * Math.max(0, attendeeCount | 0) : fee;
+}
+
+/** 將整堂場地費平均分攤到每位學生（整數，餘數放第一位），供 CSV 加總使用 */
+export function splitFee(total, n) {
+  if (n <= 0) return [];
+  const base = Math.floor(total / n);
+  return Array.from({ length: n }, (_, i) => (i === 0 ? total - base * (n - 1) : base));
+}
+
+export function validateVenue(v) {
+  const e = [];
+  if (!v.name || !String(v.name).trim()) e.push('請輸入場地名稱');
+  if (!Number.isInteger(Number(v.fee)) || Number(v.fee) < 0) e.push('場地費需為 0 以上的整數');
+  if (!FEE_MODES[v.mode]) e.push('請選擇計費方式');
+  return e;
+}
+
+/**
+ * 匯入備份的正規化（向下相容）：
+ * v1 備份沒有 venues、上課紀錄沒有 venueId / venueFee → 視為無場地、場地費 0。
+ */
+export function normalizeBackup(obj) {
+  if (!obj || typeof obj !== 'object') throw new Error('不是有效的備份檔');
+  for (const k of ['students', 'packages', 'sessions']) if (!Array.isArray(obj[k])) throw new Error('格式不符（缺少 ' + k + '）');
+  const venues = Array.isArray(obj.venues) ? obj.venues.filter((v) => v && v.id) : [];
+  const sessions = obj.sessions.filter((s) => s && s.id).map((s) => ({ ...s, attendees: Array.isArray(s.attendees) ? s.attendees : [] }));
+  return { students: obj.students.filter((x) => x && x.id), packages: obj.packages.filter((x) => x && x.id), sessions, venues };
 }

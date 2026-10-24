@@ -4,14 +4,16 @@ import { ntd, num, ymLabel, dateLabel, shortDate, timeOf, todayStr, nowLocal, es
 import * as db from './db.js';
 import { buildDemo } from './demo.js';
 
-const APP_VERSION = '1.0.0';
-const data = { students: [], packages: [], sessions: [] };
+const APP_VERSION = '1.1.0';
+const data = { students: [], packages: [], sessions: [], venues: [] };
 const state = { month: null, reportEnd: null, search: '' };
 const $view = document.getElementById('view');
 const today = () => todayStr();
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const byId = (list, id) => list.find((x) => x.id === id);
 const studentName = (id) => (byId(data.students, id) || {}).name || '（已刪除）';
+const venueName = (id) => (id ? (byId(data.venues, id) || {}).name || '（已刪除場地）' : '無場地');
+const feeModeText = (v) => (v.mode === 'perPerson' ? `每人 ${ntd(v.fee)}` : `每堂 ${ntd(v.fee)}`);
 
 // ---------- icons ----------
 const ic = {
@@ -23,6 +25,7 @@ const ic = {
   check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   bell: '<svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 004 0"/></svg>',
   clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
+  pin: '<svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0113 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg>',
   warn: '<svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>',
 };
 
@@ -79,7 +82,8 @@ function download(filename, text, mime) {
 // ---------- persistence ----------
 async function reload() {
   const d = await db.loadAll();
-  data.students = d.students; data.packages = d.packages; data.sessions = d.sessions;
+  data.students = d.students; data.packages = d.packages; data.sessions = d.sessions; data.venues = d.venues || [];
+  state.lastVenueId = await db.getMeta('lastVenueId');
 }
 
 // ---------- views ----------
@@ -99,12 +103,19 @@ views.home = () => {
   if (m.incomeRefund) extra.push(`退費差額 ${ntd(m.incomeRefund)}`);
   return `
   <header class="topbar home"><h1 class="brand">教練帳本</h1>${monthNav(ym, 'home')}</header>
+  <section class="hero">
+    <span class="slabel">本月淨收入</span>
+    <span class="hval ${m.netIncome < 0 ? 'neg' : ''}">${ntd(m.netIncome)}</span>
+    <span class="hsub">實際收入 ${ntd(m.income)} − 場地費 ${ntd(m.venueFees)}</span>
+    <span class="hsub">${m.classes} 堂・學員人次 ${m.attendances}</span>
+  </section>
   <section class="stats">
+    <div class="stat"><span class="slabel">實際收入</span><span class="sval ${m.income < 0 ? 'neg' : ''}">${ntd(m.income)}</span>
+      <span class="ssub">${extra.length ? extra.join('・') : `上課認列 ${ntd(m.incomeSessions)}`}</span></div>
+    <div class="stat"><span class="slabel">場地費</span><span class="sval">${m.venueFees ? '−' : ''}${ntd(m.venueFees)}</span>
+      <span class="ssub">${feeBreakdownText(m)}</span></div>
     <div class="stat"><span class="slabel">實收現金</span><span class="sval ${m.cashIn < 0 ? 'neg' : ''}">${ntd(m.cashIn)}</span>
       <span class="ssub">${m.cashRefunds ? `購課 ${ntd(m.cashPurchases)}・退費 ${ntd(m.cashRefunds)}` : '購課收款（含無卡分期）'}</span></div>
-    <div class="stat accent"><span class="slabel">實際收入</span><span class="sval">${ntd(m.income)}</span>
-      <span class="ssub">${extra.length ? extra.join('・') : `上課認列 ${ntd(m.incomeSessions)}`}</span></div>
-    <div class="stat"><span class="slabel">上課堂數</span><span class="sval">${m.classes}<small> 堂</small></span><span class="ssub">學員人次 ${m.attendances}</span></div>
     <div class="stat"><span class="slabel">期末預收款餘額</span><span class="sval">${ntd(m.endingDeferred)}</span><span class="ssub">尚未上課的已收款</span></div>
   </section>
   <a class="cta" href="#/checkin">${ic.check}<span>上課簽到</span></a>
@@ -118,11 +129,24 @@ views.home = () => {
   ${al.expiring.length ? `<section class="card"><h2 class="ctitle">${ic.clock}14 天內到期<span class="count">${al.expiring.length}</span></h2>
     <ul class="list">${al.expiring.map((x) => `<li><a href="#/student/${x.pkg.studentId}" class="li"><span class="liname">${esc(x.student ? x.student.name : '')}<small>${esc(x.pkg.name)}・剩 ${x.ledger.remaining} 堂・到期 ${shortDateY(x.pkg.expiryDate)}</small></span><span class="pill ${x.daysLeft <= 3 ? 'danger' : 'warn'}">${x.daysLeft === 0 ? '今天到期' : `${x.daysLeft} 天後`}</span></a></li>`).join('')}</ul></section>` : ''}
   ${warnPkgs.length ? `<section class="card"><h2 class="ctitle">${ic.warn}需要注意</h2><ul class="list">${warnPkgs.map((p) => `<li><a href="#/student/${p.studentId}" class="li"><span class="liname">${esc(studentName(p.studentId))}<small>${esc(p.name)}：${L[p.id].warnings.map((w) => E.WARNING_LABELS[w]).join('、')}</small></span></a></li>`).join('')}</ul></section>` : ''}
+  ${venueBreakdownCard(m, '本月場地費')}
   ${!empty ? `<section class="card"><h2 class="ctitle">本月上課紀錄<span class="count">${monthSessions.length}</span></h2>
     ${monthSessions.length ? `<ul class="list">${monthSessions.slice(0, 8).map((s) => sessionRow(s, L)).join('')}</ul>` : '<p class="muted pad">這個月還沒有上課紀錄</p>'}</section>` : ''}
   `;
 };
 
+function feeBreakdownText(m) {
+  const ks = Object.keys(m.feesByVenue).filter((k) => m.feesByVenue[k].fee > 0);
+  if (!ks.length) return '本月無場地費';
+  if (ks.length === 1) return `${esc(venueName(ks[0]))}`;
+  return `${ks.length} 個場地`;
+}
+function venueBreakdownCard(m, title) {
+  const ks = Object.keys(m.feesByVenue).sort((a, b) => m.feesByVenue[b].fee - m.feesByVenue[a].fee);
+  if (!ks.length) return '';
+  return `<section class="card"><h2 class="ctitle">${ic.pin}${title}<span class="count">${ntd(m.venueFees)}</span></h2>
+    <ul class="list">${ks.map((k) => `<li><div class="li"><span class="liname">${esc(venueName(k))}<small>${m.feesByVenue[k].classes} 堂</small></span><span class="amt">${ntd(m.feesByVenue[k].fee)}</span></div></li>`).join('')}</ul></section>`;
+}
 function sessionRow(s, L, onlyStudent = null) {
   const atts = onlyStudent ? s.attendees.filter((a) => a.studentId === onlyStudent) : s.attendees;
   const names = s.attendees.map((a) => esc(studentName(a.studentId))).join('、');
@@ -134,6 +158,7 @@ function sessionRow(s, L, onlyStudent = null) {
   return `<li><a class="li sess" href="#/session/${s.id}">
     <span class="sdate"><b>${shortDate(s.datetime)}</b><small>${timeOf(s.datetime)}</small></span>
     <span class="liname">${onlyStudent && s.attendees.length > 1 ? `<small class="tag">${s.attendees.length} 人課</small>` : ''}${onlyStudent ? '' : names}
+      ${s.venueId || E.sessionFee(s) ? `<small class="venue">${ic.pin}${esc(venueName(s.venueId))}${onlyStudent ? '' : `・場地費 ${ntd(E.sessionFee(s))}`}</small>` : ''}
       ${noteBits ? `<small>${esc(noteBits)}</small>` : ''}${own}
       ${flags.length ? `<small class="warntext">${flags.map((f) => (f === 'none' ? '未扣方案' : E.WARNING_LABELS[f])).join('、')}</small>` : ''}</span>
     <span class="amt">${ntd(val)}</span></a></li>`;
@@ -304,11 +329,38 @@ function initCheckin(sessionId, preStudent) {
     const s = byId(data.sessions, sessionId);
     if (!s) return false;
     ck = { id: s.id, datetime: s.datetime, note: { content: '', sets: '', condition: '', ...(s.sharedNote || {}) }, sel: s.attendees.map((a) => ({ ...a, manual: true })), search: '' };
+    ck.venueId = s.venueId || '';
+    ck.fee = E.sessionFee(s);
+    ck.feeManual = ck.fee !== E.venueFeeFor(byId(data.venues, ck.venueId), s.attendees.length);
   } else {
     ck = { id: null, datetime: nowLocal(), note: { content: '', sets: '', condition: '' }, sel: [], search: '' };
+    const last = byId(data.venues, state.lastVenueId);
+    ck.venueId = last && !last.archived ? last.id : '';
+    ck.fee = 0; ck.feeManual = false;
     if (preStudent && byId(data.students, preStudent)) addSel(preStudent);
+    recalcFee();
   }
   return true;
+}
+function recalcFee() { if (!ck.feeManual) ck.fee = E.venueFeeFor(byId(data.venues, ck.venueId), ck.sel.length); }
+function feeHintHTML() {
+  const v = byId(data.venues, ck.venueId);
+  if (!data.venues.length) return '還沒有場地，<a href="#/venue-new">到設定新增場地</a>後簽到會自動帶入場地費';
+  if (!v) return '無場地：可直接輸入金額，或保持 NT$0';
+  const def = E.venueFeeFor(v, ck.sel.length);
+  const calc = v.mode === 'perPerson' ? `每人 ${ntd(v.fee)} × ${ck.sel.length} 人 = ${ntd(def)}` : `每堂固定 ${ntd(v.fee)}`;
+  return ck.feeManual && ck.fee !== def ? `${calc}・已手動修改 <button type="button" class="textbtn small inline" data-feereset="1">恢復 ${ntd(def)}</button>` : calc;
+}
+function venueHTML() {
+  const opts = data.venues.filter((v) => !v.archived || v.id === ck.venueId);
+  return `<h2 class="ctitle">${ic.pin}場地與場地費<small class="muted">${ck.sel.length > 1 ? '整堂合計' : ''}</small></h2>
+    <div class="row gap venue-row">
+      <label class="field grow"><span class="flabel">場地</span><select name="venue">
+        ${opts.map((v) => `<option value="${v.id}" ${v.id === ck.venueId ? 'selected' : ''}>${esc(v.name)}${v.archived ? '（已封存）' : ''}｜${feeModeText(v)}</option>`).join('')}
+        <option value="" ${!ck.venueId ? 'selected' : ''}>無場地 / 無場地費</option></select></label>
+      <label class="field fee"><span class="flabel">場地費（NT$）</span><input name="venueFee" inputmode="numeric" value="${num(ck.fee)}"></label>
+    </div>
+    <p class="fhint" id="feeHint">${feeHintHTML()}</p>`;
 }
 function addSel(studentId) {
   ck.sel.push({ studentId, packageId: E.defaultPackageFor(data, studentId, E.dateOf(ck.datetime), today(), ck.id), note: '', manual: false });
@@ -344,6 +396,7 @@ function checkinView() {
       <div class="chips" id="chips">${chipsHTML()}</div>
     </section>
     <section id="selected">${selectedHTML()}</section>
+    <section class="card form" id="venueBox">${venueHTML()}</section>
     <section class="card">
       <h2 class="ctitle">課堂紀錄<small class="muted">${ck.sel.length > 1 ? '共同備註，套用全部學生' : ''}</small></h2>
       ${field('訓練內容', `<textarea name="content" rows="2" placeholder="例：下肢日：深蹲、羅馬尼亞硬舉">${esc(ck.note.content)}</textarea>`)}
@@ -388,6 +441,8 @@ function selectedHTML() {
 function refreshCheckin() {
   document.getElementById('chips').innerHTML = chipsHTML();
   document.getElementById('selected').innerHTML = selectedHTML();
+  recalcFee();
+  document.getElementById('venueBox').innerHTML = venueHTML();
   const b = document.getElementById('ckSave');
   b.disabled = !ck.sel.length;
   if (!ck.id) b.innerHTML = `${ic.check}${ck.sel.length ? `簽到（${ck.sel.length} 位）` : '請選擇學生'}`;
@@ -399,22 +454,26 @@ views.reports = () => {
   const rows = E.monthlyReport(data, end, 12, t);
   const years = yearsWithData();
   const yt = years.map((y) => E.yearTotals(data, y, t));
-  const tot = rows.reduce((a, r) => ({ cashIn: a.cashIn + r.cashIn, income: a.income + r.income, classes: a.classes + r.classes }), { cashIn: 0, income: 0, classes: 0 });
+  const tot = rows.reduce((a, r) => ({ cashIn: a.cashIn + r.cashIn, income: a.income + r.income, venueFees: a.venueFees + r.venueFees, netIncome: a.netIncome + r.netIncome, classes: a.classes + r.classes }), { cashIn: 0, income: 0, venueFees: 0, netIncome: 0, classes: 0 });
+  const neg = (v) => (v < 0 ? 'neg' : '');
   return `${topbar('報表')}
   ${monthNav(end, 'report').replace('monthnav', 'monthnav center')}
   <section class="card"><h2 class="ctitle">近 12 個月<small class="muted">${ymLabel(rows[0].month)} – ${ymLabel(end)}</small></h2>
     ${chartSVG(rows)}
-    <div class="legend"><span class="lg cash"></span>實收現金<span class="lg inc"></span>實際收入<span class="lg def"></span>期末預收款</div>
+    <div class="legend"><span class="lg cash"></span>實收現金<span class="lg inc"></span>淨收入<span class="lg def"></span>期末預收款</div>
   </section>
   <section class="card flush"><div class="tablewrap"><table class="report">
-    <thead><tr><th>月份</th><th>實收現金</th><th>實際收入</th><th>堂數</th><th>期末預收</th></tr></thead>
-    <tbody>${rows.slice().reverse().map((r) => `<tr><td>${r.month.replace('-', '/')}</td><td class="${r.cashIn < 0 ? 'neg' : ''}">${num(r.cashIn)}</td><td class="${r.income < 0 ? 'neg' : ''}">${num(r.income)}</td><td>${r.classes}</td><td>${num(r.endingDeferred)}</td></tr>`).join('')}</tbody>
-    <tfoot><tr><td>合計</td><td>${num(tot.cashIn)}</td><td>${num(tot.income)}</td><td>${tot.classes}</td><td>${num(rows[11].endingDeferred)}</td></tr></tfoot>
-  </table></div><p class="fhint pad">單位：新台幣元。期末預收 = 已收款但尚未上課（尚未認列）的金額。</p></section>
+    <thead><tr><th>月份</th><th>淨收入</th><th>實際收入</th><th>場地費</th><th>實收現金</th><th>堂數</th><th>期末預收</th></tr></thead>
+    <tbody>${rows.slice().reverse().map((r) => `<tr><td>${r.month.replace('-', '/')}</td><td class="strong ${neg(r.netIncome)}">${num(r.netIncome)}</td><td class="${neg(r.income)}">${num(r.income)}</td><td>${r.venueFees ? '−' + num(r.venueFees) : '0'}</td><td class="${neg(r.cashIn)}">${num(r.cashIn)}</td><td>${r.classes}</td><td>${num(r.endingDeferred)}</td></tr>`).join('')}</tbody>
+    <tfoot><tr><td>合計</td><td class="${neg(tot.netIncome)}">${num(tot.netIncome)}</td><td>${num(tot.income)}</td><td>${tot.venueFees ? '−' + num(tot.venueFees) : '0'}</td><td>${num(tot.cashIn)}</td><td>${tot.classes}</td><td>${num(rows[11].endingDeferred)}</td></tr></tfoot>
+  </table></div><p class="fhint pad">單位：新台幣元。淨收入 = 實際收入 − 場地費。期末預收 = 已收款但尚未上課（尚未認列）的金額。表格可左右滑動。</p></section>
+  ${venueBreakdownCard(rows[11], `${ymLabel(end)} 場地費明細`)}
   <h2 class="sectiontitle">年度合計</h2>
   ${yt.map((y) => `<section class="card year"><h3>${y.year} 年</h3><dl class="grid2">
-    <div><dt>實收現金</dt><dd>${ntd(y.cashIn)}</dd></div><div><dt>實際收入</dt><dd>${ntd(y.income)}</dd></div>
-    <div><dt>上課堂數</dt><dd>${y.classes} 堂（${y.attendances} 人次）</dd></div><div><dt>${y.year == t.slice(0, 4) ? '目前預收款' : '年底預收款'}</dt><dd>${ntd(y.year == t.slice(0, 4) ? E.monthSummary(data, t.slice(0, 7), t).endingDeferred : y.endingDeferred)}</dd></div>
+    <div class="span2"><dt>淨收入</dt><dd class="big ${neg(y.netIncome)}">${ntd(y.netIncome)}</dd></div>
+    <div><dt>實際收入</dt><dd>${ntd(y.income)}</dd></div><div><dt>場地費</dt><dd>${y.venueFees ? '−' : ''}${ntd(y.venueFees)}</dd></div>
+    <div><dt>實收現金</dt><dd>${ntd(y.cashIn)}</dd></div><div><dt>上課堂數</dt><dd>${y.classes} 堂（${y.attendances} 人次）</dd></div>
+    <div><dt>${y.year == t.slice(0, 4) ? '目前預收款' : '年底預收款'}</dt><dd>${ntd(y.year == t.slice(0, 4) ? E.monthSummary(data, t.slice(0, 7), t).endingDeferred : y.endingDeferred)}</dd></div>
   </dl></section>`).join('')}`;
 };
 function yearsWithData() {
@@ -427,17 +486,17 @@ function yearsWithData() {
 }
 function chartSVG(rows) {
   const W = 340, H = 180, pl = 4, pb = 22, pt = 10;
-  const vals = rows.flatMap((r) => [r.cashIn, r.income, r.endingDeferred]);
+  const vals = rows.flatMap((r) => [r.cashIn, r.netIncome, r.endingDeferred]);
   const max = Math.max(1, ...vals), min = Math.min(0, ...vals);
   const y = (v) => pt + (H - pt - pb) * (max - v) / (max - min);
   const bw = (W - pl * 2) / rows.length;
   const bar = (x, v, cls) => { const y0 = y(0), y1 = y(v); return `<rect class="${cls}" x="${x.toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" width="${(bw * 0.34).toFixed(1)}" height="${Math.max(0.5, Math.abs(y1 - y0)).toFixed(1)}" rx="2"/>`; };
   const pts = rows.map((r, i) => `${(pl + bw * i + bw / 2).toFixed(1)},${y(r.endingDeferred).toFixed(1)}`).join(' ');
   const fmtK = (v) => (Math.abs(v) >= 10000 ? `${Math.round(v / 1000) / 10}萬` : num(v));
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="近12個月實收現金與實際收入長條圖">
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="近12個月實收現金與淨收入長條圖">
     <line class="axis" x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}"/>
     <text class="maxlabel" x="${W - 2}" y="${pt + 2}" text-anchor="end">${fmtK(max)}</text>
-    ${rows.map((r, i) => { const x = pl + bw * i + bw * 0.14; return bar(x, r.cashIn, 'b-cash') + bar(x + bw * 0.36, r.income, 'b-inc') + `<text x="${(pl + bw * i + bw / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle">${Number(r.month.slice(5))}月</text>`; }).join('')}
+    ${rows.map((r, i) => { const x = pl + bw * i + bw * 0.14; return bar(x, r.cashIn, 'b-cash') + bar(x + bw * 0.36, r.netIncome, 'b-inc') + `<text x="${(pl + bw * i + bw / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle">${Number(r.month.slice(5))}月</text>`; }).join('')}
     <polyline class="l-def" points="${pts}"/>
   </svg>`;
 }
@@ -454,6 +513,12 @@ views.settings = async () => {
     <p class="small ${days === null || days > 14 ? 'warntext' : 'muted'}">上次備份：${lastBackup ? `${dateLabel(lastBackup)}${days > 0 ? `（${days} 天前）` : '（今天）'}` : '從未備份'}</p>
     ${persisted === false ? '<button class="btn small" data-act="persist">要求瀏覽器保留資料</button>' : ''}
   </section>
+  <h2 class="sectiontitle">場地（場地費）</h2>
+  <section class="card menu" id="venueList">
+    ${[...data.venues].sort((a, b) => (a.archived ? 1 : 0) - (b.archived ? 1 : 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || ''))).map((v) => `<a class="mi ${v.archived ? 'archived' : ''}" href="#/venue-edit/${v.id}"><span>${esc(v.name)}${v.archived ? '<em class="badge st-completed">已封存</em>' : ''}<small>${E.FEE_MODES[v.mode] || ''}・${feeModeText(v)}${v.mode === 'perPerson' ? '（× 上課人數）' : ''}</small></span>${ic.right}</a>`).join('')}
+    <a class="mi add" href="#/venue-new"><span>${ic.plus}新增場地</span></a>
+  </section>
+  <p class="fhint pad">簽到時選擇場地會自動帶入場地費（可修改），並從實際收入扣除得到淨收入。封存的場地不會出現在簽到選單，但舊紀錄仍保留。</p>
   <h2 class="sectiontitle">備份與匯出</h2>
   <section class="card menu">
     <button class="mi" data-act="export-json"><span>匯出完整備份（JSON）<small>可用於還原 / 換手機</small></span>${ic.right}</button>
@@ -475,17 +540,35 @@ views.settings = async () => {
     <p>・每堂認列 = 實付金額 ÷（付費堂數 + 贈送堂數），尾差放在最後一堂，加總必等於實付金額。</p>
     <p>・購課（含無卡分期）全額於購買日列為實收現金與預收款；每次上課將一堂金額轉為實際收入。</p>
     <p>・過期仍有剩餘堂數：剩餘預收款於到期月份「過期認列」。退費：剩餘預收款扣除退費金額的差額於退費月份認列。</p>
+    <p>・場地費：每堂一筆（團體課為整堂合計），列為上課日期當月的費用；淨收入 = 實際收入 − 場地費。</p>
     <p>・安裝到 iPhone：用 Safari 開啟 → 分享 → 加入主畫面。</p>
     <p>版本 ${APP_VERSION}</p>
   </section>`;
 };
+
+views['venue-new'] = () => venueForm(null);
+views['venue-edit'] = (id) => { const v = byId(data.venues, id); return v ? venueForm(v) : notFound(); };
+function venueForm(v) {
+  const x = v || { name: '', fee: '', mode: 'perClass' };
+  const used = v ? data.sessions.filter((s) => s.venueId === v.id).length : 0;
+  return `${topbar(v ? '編輯場地' : '新增場地', { backTo: '#/settings' })}
+  <form class="form card" id="venueForm" data-id="${v ? v.id : ''}">
+    ${field('場地名稱 *', `<input name="name" required value="${esc(x.name)}" placeholder="例：大安健身工作室" autocomplete="off">`)}
+    ${field('計費方式', `<div class="seg">${Object.entries(E.FEE_MODES).map(([k, l]) => `<label><input type="radio" name="mode" value="${k}" ${x.mode === k ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>`, '每堂固定：一堂課付一次；每人計費：場地費 × 該堂學生人數（一對二、團體）')}
+    ${field('預設場地費（NT$）*', `<input name="fee" inputmode="numeric" required value="${x.fee === '' ? '' : num(x.fee)}" placeholder="例：400">`, '簽到時會自動帶入，每堂仍可個別修改；修改這裡不會改變舊紀錄')}
+    <div class="errors" id="formErrors"></div>
+    <button class="btn primary full big" type="submit">${v ? '儲存場地' : '新增場地'}</button>
+    ${v ? `<p class="fhint center">已有 ${used} 筆上課紀錄使用此場地</p>
+      <button class="btn ghost full ${v.archived ? '' : 'danger'}" type="button" data-act="venue-archive" data-id="${v.id}">${v.archived ? '取消封存（重新啟用）' : '封存場地（不再出現在簽到選單）'}</button>` : ''}
+  </form>`;
+}
 
 function notFound() { return `${topbar('找不到資料', { backTo: '#/' })}<p class="empty">這筆資料不存在或已刪除</p>`; }
 
 // ---------- 匯出 ----------
 function stamp() { return today().replace(/-/g, ''); }
 async function exportJSON() {
-  const payload = { app: 'coach-ledger', version: 1, exportedAt: new Date().toISOString(), students: data.students, packages: data.packages, sessions: data.sessions };
+  const payload = { app: 'coach-ledger', version: 2, exportedAt: new Date().toISOString(), students: data.students, packages: data.packages, sessions: data.sessions, venues: data.venues };
   download(`教練帳本備份-${stamp()}.json`, JSON.stringify(payload, null, 2), 'application/json');
   await db.setMeta('lastBackup', nowLocal());
   toast('已匯出備份');
@@ -497,18 +580,20 @@ function csvMonthly() {
   const first = dates.length ? dates[0].slice(0, 7) : t.slice(0, 7);
   let count = 1; while (E.addMonths(first, count - 1) < t.slice(0, 7)) count++;
   const rows = E.monthlyReport(data, t.slice(0, 7), count, t);
-  download(`月報表-${stamp()}.csv`, toCSV([['月份', '實收現金', '購課收款', '退費支出', '實際收入', '上課認列', '過期認列', '退費差額認列', '上課堂數', '學員人次', '期末預收款餘額'],
-    ...rows.map((r) => [r.month, r.cashIn, r.cashPurchases, r.cashRefunds, r.income, r.incomeSessions, r.incomeExpiry, r.incomeRefund, r.classes, r.attendances, r.endingDeferred])]), 'text/csv;charset=utf-8');
+  download(`月報表-${stamp()}.csv`, toCSV([['月份', '實收現金', '購課收款', '退費支出', '實際收入', '上課認列', '過期認列', '退費差額認列', '場地費', '淨收入', '上課堂數', '學員人次', '期末預收款餘額'],
+    ...rows.map((r) => [r.month, r.cashIn, r.cashPurchases, r.cashRefunds, r.income, r.incomeSessions, r.incomeExpiry, r.incomeRefund, r.venueFees, r.netIncome, r.classes, r.attendances, r.endingDeferred])]), 'text/csv;charset=utf-8');
 }
 function csvSessions() {
   const L = ledgers();
-  const rows = [['日期', '時間', '學生', '方案', '認列金額', '同堂人數', '訓練內容', '重量/組數/次數', '身體狀況', '個人備註', '狀態']];
+  const rows = [['日期', '時間', '學生', '方案', '認列金額', '同堂人數', '場地', '場地費（本堂合計）', '場地費分攤', '訓練內容', '重量/組數/次數', '身體狀況', '個人備註', '狀態']];
   for (const s of [...data.sessions].sort((a, b) => (a.datetime < b.datetime ? -1 : 1))) {
-    for (const a of s.attendees) {
+    const fee = E.sessionFee(s);
+    const share = E.splitFee(fee, s.attendees.length);
+    for (const [i, a] of s.attendees.entries()) {
       const p = a.packageId && byId(data.packages, a.packageId);
       const lg = p && L[p.id];
       const flag = !p ? '未扣方案' : lg.sessionFlags[s.id] ? E.WARNING_LABELS[lg.sessionFlags[s.id]] : '';
-      rows.push([E.dateOf(s.datetime), timeOf(s.datetime), studentName(a.studentId), p ? p.name : '', lg ? lg.sessionValues[s.id] || 0 : 0, s.attendees.length, s.sharedNote?.content, s.sharedNote?.sets, s.sharedNote?.condition, a.note, flag]);
+      rows.push([E.dateOf(s.datetime), timeOf(s.datetime), studentName(a.studentId), p ? p.name : '', lg ? lg.sessionValues[s.id] || 0 : 0, s.attendees.length, s.venueId ? venueName(s.venueId) : '', fee, share[i], s.sharedNote?.content, s.sharedNote?.sets, s.sharedNote?.condition, a.note, flag]);
     }
   }
   download(`上課明細-${stamp()}.csv`, toCSV(rows), 'text/csv;charset=utf-8');
@@ -527,17 +612,20 @@ function csvLedger() {
   const ev = [];
   const lbl = { purchase: '購課收款', refund: '退費', session: '上課認列', expiry: '過期認列' };
   for (const p of data.packages) {
-    for (const c of L[p.id].cash) ev.push([c.date, lbl[c.type], studentName(p.studentId), p.name, c.amount, '']);
-    for (const e of L[p.id].income) ev.push([e.date, e.type === 'refund' ? '退費差額認列' : lbl[e.type], studentName(p.studentId), p.name, '', e.amount]);
+    for (const c of L[p.id].cash) ev.push([c.date, lbl[c.type], studentName(p.studentId), p.name, c.amount, '', '']);
+    for (const e of L[p.id].income) ev.push([e.date, e.type === 'refund' ? '退費差額認列' : lbl[e.type], studentName(p.studentId), p.name, '', e.amount, '']);
+  }
+  for (const s of data.sessions) {
+    const f = E.sessionFee(s);
+    if (f) ev.push([E.dateOf(s.datetime), '場地費', s.attendees.map((a) => studentName(a.studentId)).join('、'), venueName(s.venueId), '', '', f]);
   }
   ev.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  download(`帳務明細-${stamp()}.csv`, toCSV([['日期', '類別', '學生', '方案', '現金（收入+ / 支出−）', '認列收入'], ...ev]), 'text/csv;charset=utf-8');
+  download(`帳務明細-${stamp()}.csv`, toCSV([['日期', '類別', '學生', '方案 / 場地', '現金（收入+ / 支出−）', '認列收入', '場地費'], ...ev]), 'text/csv;charset=utf-8');
 }
 async function importJSON(file) {
   try {
-    const obj = JSON.parse(await file.text());
-    if (!obj || !Array.isArray(obj.students) || !Array.isArray(obj.packages) || !Array.isArray(obj.sessions)) throw new Error('格式不符');
-    if (!confirm(`將以備份取代目前所有資料：\n學生 ${obj.students.length} 位、方案 ${obj.packages.length} 個、上課紀錄 ${obj.sessions.length} 筆\n確定匯入？`)) return;
+    const obj = E.normalizeBackup(JSON.parse(await file.text())); // 舊版（v1）備份沒有場地 → 場地費視為 0
+    if (!confirm(`將以備份取代目前所有資料：\n學生 ${obj.students.length} 位、方案 ${obj.packages.length} 個、上課紀錄 ${obj.sessions.length} 筆、場地 ${obj.venues.length} 個\n確定匯入？`)) return;
     await db.replaceAll(obj);
     await reload();
     toast('匯入完成', 'ok');
@@ -556,6 +644,13 @@ const actions = {
     toast('已載入範例資料', 'ok');
     render();
   },
+  async 'venue-archive'(el) {
+    const v = byId(data.venues, el.dataset.id);
+    await db.put('venues', { ...v, archived: !v.archived });
+    await reload();
+    toast(v.archived ? '已重新啟用場地' : '已封存場地（舊紀錄保留）');
+    go('#/settings');
+  },
   async 'demo-remove'() {
     if (!confirm('移除所有「範例」資料？（你自己輸入的資料不受影響）')) return;
     const dels = {};
@@ -563,8 +658,9 @@ const actions = {
     // 自己的上課紀錄若扣到範例方案，改為未扣方案
     const demoPk = new Set(dels.packages);
     const demoSt = new Set(dels.students);
-    const fix = data.sessions.filter((s) => !s.demo && s.attendees.some((a) => demoPk.has(a.packageId) || demoSt.has(a.studentId)))
-      .map((s) => ({ ...s, attendees: s.attendees.filter((a) => !demoSt.has(a.studentId)).map((a) => (demoPk.has(a.packageId) ? { ...a, packageId: null } : a)) }));
+    const demoVn = new Set(dels.venues);
+    const fix = data.sessions.filter((s) => !s.demo && (demoVn.has(s.venueId) || s.attendees.some((a) => demoPk.has(a.packageId) || demoSt.has(a.studentId))))
+      .map((s) => ({ ...s, venueId: demoVn.has(s.venueId) ? null : s.venueId ?? null, attendees: s.attendees.filter((a) => !demoSt.has(a.studentId)).map((a) => (demoPk.has(a.packageId) ? { ...a, packageId: null } : a)) }));
     await db.batch({ del: dels, put: { sessions: fix.filter((s) => s.attendees.length) } });
     await db.batch({ del: { sessions: fix.filter((s) => !s.attendees.length).map((s) => s.id) } });
     await reload();
@@ -628,8 +724,9 @@ const actions = {
 
 // ---------- 事件 ----------
 document.addEventListener('click', (ev) => {
-  const el = ev.target.closest('[data-act],[data-back],[data-month],[data-chip],[data-unsel]');
+  const el = ev.target.closest('[data-act],[data-back],[data-month],[data-chip],[data-unsel],[data-feereset]');
   if (!el) return;
+  if (el.dataset.feereset) { ck.feeManual = false; recalcFee(); document.getElementById('venueBox').innerHTML = venueHTML(); return; }
   if (el.dataset.back !== undefined) { ev.preventDefault(); back(el.dataset.back); return; }
   if (el.dataset.month) {
     const [key, d] = el.dataset.month.split(':');
@@ -662,6 +759,7 @@ document.addEventListener('input', (ev) => {
   if (t.id === 'ckSearch') { ck.search = t.value; document.getElementById('chips').innerHTML = chipsHTML(); return; }
   const f = t.form;
   if (!f) return;
+  if (f.id === 'venueForm' && t.name === 'fee') { const raw = t.value.replace(/[^\d]/g, ''); t.value = raw ? Number(raw).toLocaleString('en-US') : ''; }
   if (f.id === 'packageForm') {
     if (t.name === 'price') { const raw = t.value.replace(/[^\d]/g, ''); t.value = raw ? Number(raw).toLocaleString('en-US') : ''; }
     updateUnitPreview(f);
@@ -673,6 +771,12 @@ document.addEventListener('input', (ev) => {
   if (f.id === 'checkinForm') {
     if (['content', 'sets', 'condition'].includes(t.name)) ck.note[t.name] = t.value;
     if (t.dataset.pnote !== undefined) ck.sel[+t.dataset.pnote].note = t.value;
+    if (t.name === 'venueFee') {
+      const raw = t.value.replace(/[^\d]/g, '');
+      t.value = raw ? Number(raw).toLocaleString('en-US') : '';
+      ck.fee = raw ? parseInt(raw, 10) : 0; ck.feeManual = true;
+      document.getElementById('feeHint').innerHTML = feeHintHTML();
+    }
   }
 });
 document.addEventListener('change', (ev) => {
@@ -684,6 +788,7 @@ document.addEventListener('change', (ev) => {
     for (const a of ck.sel) if (!a.manual) a.packageId = E.defaultPackageFor(data, a.studentId, E.dateOf(ck.datetime), today(), ck.id);
     document.getElementById('selected').innerHTML = selectedHTML();
   }
+  if (t.name === 'venue') { ck.venueId = t.value; ck.feeManual = false; recalcFee(); document.getElementById('venueBox').innerHTML = venueHTML(); }
   if (t.dataset.pkg !== undefined) { const a = ck.sel[+t.dataset.pkg]; a.packageId = t.value || null; a.manual = true; }
 });
 
@@ -699,6 +804,18 @@ document.addEventListener('submit', async (ev) => {
     await reload();
     toast(f.dataset.id ? '已儲存' : '已新增學生', 'ok');
     go(f.dataset.id ? `#/student/${id}` : `#/package-new/${id}`);
+  }
+  if (f.id === 'venueForm') {
+    const id = f.dataset.id || uid();
+    const old = byId(data.venues, id) || { createdAt: nowLocal(), archived: false };
+    const raw = f.fee.value.replace(/[^\d]/g, '');
+    const v = { ...old, id, name: f.name.value.trim(), fee: raw === '' ? NaN : parseInt(raw, 10), mode: f.mode.value };
+    const errs = E.validateVenue(v);
+    if (errs.length) { document.getElementById('formErrors').innerHTML = errs.map((e) => `<p>${esc(e)}</p>`).join(''); return; }
+    await db.put('venues', v);
+    await reload();
+    toast(f.dataset.id ? '場地已更新' : '已新增場地', 'ok');
+    go('#/settings');
   }
   if (f.id === 'packageForm') {
     const id = f.dataset.id || uid();
@@ -735,21 +852,23 @@ document.addEventListener('submit', async (ev) => {
     if (!ck.datetime) return toast('請輸入上課時間', 'err');
     const old = ck.id ? byId(data.sessions, ck.id) : null;
     const s = { ...(old || { createdAt: nowLocal() }), id: ck.id || uid(), datetime: ck.datetime, sharedNote: { ...ck.note },
-      attendees: ck.sel.map((a) => ({ studentId: a.studentId, packageId: a.packageId || null, note: ck.sel.length > 1 ? a.note.trim() : '' })) };
+      attendees: ck.sel.map((a) => ({ studentId: a.studentId, packageId: a.packageId || null, note: ck.sel.length > 1 ? a.note.trim() : '' })),
+      venueId: ck.venueId || null, venueFee: Math.max(0, Math.round(Number(ck.fee) || 0)) };
     if (old && old.demo) s.demo = true;
     await db.put('sessions', s);
+    if (!ck.id) await db.setMeta('lastVenueId', s.venueId || '');
     await reload();
     const L = ledgers();
     const msg = s.attendees.map((a) => `${studentName(a.studentId)}${a.packageId ? ` 剩 ${L[a.packageId].remaining} 堂` : '（未扣方案）'}`).join('、');
     const wasEdit = !!ck.id;
     ck = null;
-    toast(`${wasEdit ? '已更新' : '已簽到'} ✓ ${msg}`, 'ok');
+    toast(`${wasEdit ? '已更新' : '已簽到'} ✓ ${msg}${s.venueFee ? `・場地費 ${ntd(s.venueFee)}` : ''}`, 'ok');
     go(wasEdit && s.attendees.length === 1 ? `#/student/${s.attendees[0].studentId}` : '#/');
   }
 });
 
 // ---------- 路由 ----------
-const TAB_OF = { home: 'home', students: 'students', student: 'students', 'student-new': 'students', 'student-edit': 'students', 'package-new': 'students', 'package-edit': 'students', refund: 'students', checkin: 'checkin', session: 'checkin', reports: 'reports', settings: 'settings' };
+const TAB_OF = { home: 'home', students: 'students', student: 'students', 'student-new': 'students', 'student-edit': 'students', 'package-new': 'students', 'package-edit': 'students', refund: 'students', checkin: 'checkin', session: 'checkin', reports: 'reports', settings: 'settings', 'venue-new': 'settings', 'venue-edit': 'settings' };
 state.navCount = -1;
 async function render() {
   const [path, qs] = location.hash.replace(/^#\/?/, '').split('?');

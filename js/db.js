@@ -1,7 +1,9 @@
 // IndexedDB 儲存層：資料只存在這支手機上
 const DB_NAME = 'coach-ledger';
-const VERSION = 1;
-export const STORES = ['students', 'packages', 'sessions'];
+// v1：students / packages / sessions / meta
+// v2：新增 venues（場地）。升級只「新增」缺少的資料表，既有資料完全不動。
+const VERSION = 2;
+export const STORES = ['students', 'packages', 'sessions', 'venues'];
 let dbp = null;
 
 function open() {
@@ -14,7 +16,12 @@ function open() {
       if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
     };
     req.onsuccess = () => { const db = req.result; db.onversionchange = () => { db.close(); dbp = null; }; resolve(db); };
-    req.onerror = () => reject(req.error);
+    req.onerror = () => {
+      const err = req.error;
+      dbp = null;
+      reject(err && err.name === 'VersionError' ? new Error('資料庫版本較新，請完全關閉 App 後重新開啟') : err);
+    };
+    req.onblocked = () => console.warn('資料庫升級等待其他分頁關閉');
   });
   return dbp;
 }
